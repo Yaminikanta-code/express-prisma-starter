@@ -6,7 +6,7 @@ import {
   DeleteObjectCommandInput,
 } from "@aws-sdk/client-s3";
 import { v4 as uuidv4 } from "uuid";
-import config from "../config";
+import config from "../config.js";
 
 // Interface for the file object expected by uploadFile
 interface UploadableFile {

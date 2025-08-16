@@ -1,7 +1,10 @@
 import express, { Express, Request, Response, NextFunction } from "express";
-import { DatabaseConnection } from "./core/db/database";
-import config from "./config";
-import { errorHandler, notFoundHandler } from "./core/middlewares/errorHandler";
+import { DatabaseConnection } from "./core/db/database.js";
+import config from "./config.js";
+import {
+  errorHandler,
+  notFoundHandler,
+} from "./core/middlewares/errorHandler.js";
 // import { createProductRouter } from "./domains/products/ProductRoute";
 
 export async function createApp(): Promise<Express> {

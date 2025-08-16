@@ -1,7 +1,7 @@
 import { DatabaseConnection } from "../db/database.js";
 import { createPartialZodSchema } from "../../utils/schemaValidator.js";
 import { logger } from "../../utils/logger.js";
-import { RETRYABLE_ERRORS } from "../../constants/Prisma.errors";
+import { RETRYABLE_ERRORS } from "../../constants/Prisma.errors.js";
 import { Prisma } from "@prisma/client";
 
 type TransactionFn<T = any> = (tx: Prisma.TransactionClient) => Promise<T>;

@@ -5,7 +5,7 @@ import {
   processFileUploads,
   extractS3Key,
 } from "../middlewares/uploadMiddleware.js";
-import { deleteFile } from "../../utils/s3Upload";
+import { deleteFile } from "../../utils/s3Upload.js";
 import { PrismaClient } from "@prisma/client";
 import { Request, Response, NextFunction } from "express";
 

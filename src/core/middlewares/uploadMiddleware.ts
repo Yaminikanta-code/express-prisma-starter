@@ -1,6 +1,6 @@
 import multer, { Field, FileFilterCallback } from "multer";
 import { Request, Response, NextFunction } from "express";
-import { uploadFile } from "../../utils/s3Upload";
+import { uploadFile } from "../../utils/s3Upload.js";
 
 interface UploadedFiles {
   [fieldname: string]: Express.Multer.File[];
