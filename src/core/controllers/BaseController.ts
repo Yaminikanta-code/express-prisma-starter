@@ -27,6 +27,16 @@ declare global {
   }
 }
 
+// Extend PrismaClient to support dynamic model access
+type PrismaModelClient = {
+  findMany: (args: any) => Promise<any[]>;
+  findUnique: (args: any) => Promise<any>;
+  create: (args: any) => Promise<any>;
+  update: (args: any) => Promise<any>;
+  delete: (args: any) => Promise<any>;
+  count: (args: any) => Promise<number>;
+};
+
 export class BaseController {
   private prisma: PrismaClient;
   private model: PrismaModel;
@@ -45,6 +55,10 @@ export class BaseController {
   // ========================
   // Internal Helpers
   // ========================
+  private getModelClient(): PrismaModelClient {
+    return (this.prisma as any)[this.model.modelName];
+  }
+
   private _isValidRelation(fieldName: string): boolean {
     return this.validRelations.includes(fieldName);
   }
@@ -201,9 +215,10 @@ export class BaseController {
   getAll = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const queryOptions = this._parseQueryParams(req);
+      const modelClient = this.getModelClient();
       const [items, total] = await Promise.all([
-        this.prisma[this.model.modelName].findMany(queryOptions),
-        this.prisma[this.model.modelName].count({ where: queryOptions.where }),
+        modelClient.findMany(queryOptions),
+        modelClient.count({ where: queryOptions.where }),
       ]);
       res.json({
         data: items,
@@ -238,7 +253,7 @@ export class BaseController {
         }, {} as Record<string, boolean>);
       }
 
-      const item = await this.prisma[this.model.modelName].findUnique({
+      const item = await this.getModelClient().findUnique({
         where: { id: req.params.id },
         ...(select && { select }),
         ...(include && { include: JSON.parse(include) }),
@@ -260,7 +275,7 @@ export class BaseController {
       const validatedData = await this._validateWithModelSchema(req.body);
       const nestedData = this._processNestedFields(req.body, false);
 
-      const newItem = await this.prisma[this.model.modelName].create({
+      const newItem = await this.getModelClient().create({
         data: {
           ...validatedData,
           ...nestedData,
@@ -285,7 +300,7 @@ export class BaseController {
       const validatedData = await this._validateWithModelSchema(req.body, true);
       const nestedData = this._processNestedFields(req.body, true);
 
-      const updatedItem = await this.prisma[this.model.modelName].update({
+      const updatedItem = await this.getModelClient().update({
         where: { id: req.params.id },
         data: {
           ...validatedData,
@@ -309,7 +324,7 @@ export class BaseController {
 
   delete = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const existingItem = await this.prisma[this.model.modelName].findUnique({
+      const existingItem = await this.getModelClient().findUnique({
         where: { id: req.params.id },
       });
 
@@ -330,7 +345,7 @@ export class BaseController {
         }
       }
 
-      await this.prisma[this.model.modelName].delete({
+      await this.getModelClient().delete({
         where: { id: req.params.id },
       });
 
@@ -352,7 +367,7 @@ export class BaseController {
         const validatedData = await this._validateWithModelSchema(req.body);
         const nestedData = this._processNestedFields(req.body, false);
 
-        const newItem = await this.prisma[this.model.modelName].create({
+        const newItem = await this.getModelClient().create({
           data: {
             ...validatedData,
             ...nestedData,
@@ -386,11 +401,9 @@ export class BaseController {
         );
         const nestedData = this._processNestedFields(req.body, true);
 
-        const existingItem = await this.prisma[this.model.modelName].findUnique(
-          {
-            where: { id: req.params.id },
-          }
-        );
+        const existingItem = await this.getModelClient().findUnique({
+          where: { id: req.params.id },
+        });
 
         if (existingItem && this.model.fileFields?.length) {
           for (const field of this.model.fileFields) {
@@ -401,7 +414,7 @@ export class BaseController {
           }
         }
 
-        const updatedItem = await this.prisma[this.model.modelName].update({
+        const updatedItem = await this.getModelClient().update({
           where: { id: req.params.id },
           data: {
             ...validatedData,
