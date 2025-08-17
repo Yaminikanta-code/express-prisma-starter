@@ -5,6 +5,8 @@ import { BaseController } from "../controllers/BaseController.js"; // Assuming B
 interface RouterConfig {
   rateLimiting?: boolean;
   enableFileRoutes?: boolean;
+  enableBulkRoutes?: boolean;
+  enableSoftDeleteRoutes?: boolean;
 }
 
 export class BaseRouter {
@@ -18,6 +20,8 @@ export class BaseRouter {
     this.config = {
       rateLimiting: true,
       enableFileRoutes: false,
+      enableBulkRoutes: true,
+      enableSoftDeleteRoutes: true,
       ...config,
     };
 
@@ -36,6 +40,21 @@ export class BaseRouter {
     this.router.get("/:id", this.controller.getOne);
     this.router.put("/:id", this.controller.update);
     this.router.delete("/:id", this.controller.delete);
+
+    // Soft delete & restore routes (optional)
+    if (this.config.enableSoftDeleteRoutes) {
+      this.router.delete("/:id/soft", this.controller.softDelete);
+      this.router.post("/:id/restore", this.controller.restore);
+    }
+
+    // Bulk operation routes (optional)
+    if (this.config.enableBulkRoutes) {
+      this.router.post("/bulk", this.controller.bulkCreate);
+      this.router.put("/bulk", this.controller.bulkUpdate);
+      this.router.delete("/bulk", this.controller.bulkHardDelete);
+      this.router.post("/bulk-soft-delete", this.controller.bulkSoftDelete);
+      this.router.post("/bulk-restore", this.controller.bulkRestore);
+    }
 
     // File upload routes (optional)
     if (

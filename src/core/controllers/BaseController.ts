@@ -35,7 +35,16 @@ type PrismaModelClient = {
   update: (args: any) => Promise<any>;
   delete: (args: any) => Promise<any>;
   count: (args: any) => Promise<number>;
+  updateMany: (args: any) => Promise<{ count: number }>;
+  deleteMany: (args: any) => Promise<{ count: number }>;
 };
+
+// interface for HATEOAS links
+interface Link {
+  href: string;
+  rel: string;
+  method: string;
+}
 
 export class BaseController {
   private prisma: PrismaClient;
@@ -81,6 +90,7 @@ export class BaseController {
       fields,
       filter,
       include,
+      withDeleted = false, // New: Flag to include soft-deleted records
       ...simpleFilters
     } = req.query;
 
@@ -133,7 +143,12 @@ export class BaseController {
       }, {} as Record<string, boolean>);
     }
 
-    const where: Record<string, any> = { ...jsonFilter };
+    // Exclude soft-deleted records unless `withDeleted` is true
+    const where: Record<string, any> = {
+      ...(!withDeleted && { deletedAt: null }),
+      ...jsonFilter,
+    };
+
     for (const [key, value] of Object.entries(simpleFilters)) {
       if (typeof value === "string" && value.includes(":")) {
         const [operator, val] = value.split(":");
@@ -208,6 +223,54 @@ export class BaseController {
 
     return nestedData;
   }
+
+  private _generateLinks(req: Request, id?: string): Link[] {
+    const baseUrl = `${req.protocol}://${req.get("host")}${req.baseUrl}`;
+    const links: Link[] = [
+      {
+        href: `${baseUrl}`,
+        rel: "self",
+        method: "GET",
+      },
+      {
+        href: `${baseUrl}`,
+        rel: "create",
+        method: "POST",
+      },
+    ];
+
+    if (id) {
+      links.push(
+        {
+          href: `${baseUrl}/${id}`,
+          rel: "self",
+          method: "GET",
+        },
+        {
+          href: `${baseUrl}/${id}`,
+          rel: "update",
+          method: "PUT",
+        },
+        {
+          href: `${baseUrl}/${id}`,
+          rel: "delete",
+          method: "DELETE",
+        },
+        {
+          href: `${baseUrl}/${id}/soft`,
+          rel: "soft-delete",
+          method: "DELETE",
+        },
+        {
+          href: `${baseUrl}/${id}/restore`,
+          rel: "restore",
+          method: "POST",
+        }
+      );
+    }
+
+    return links;
+  } //add to add methods
 
   // ========================
   // Public CRUD Methods
@@ -322,6 +385,7 @@ export class BaseController {
     }
   };
 
+  // Hard delete (kept as is)
   delete = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const existingItem = await this.getModelClient().findUnique({
@@ -350,6 +414,184 @@ export class BaseController {
       });
 
       res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // ========================
+  // Soft Delete & Restore
+  // ========================
+  softDelete = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const existingItem = await this.getModelClient().findUnique({
+        where: { id: req.params.id },
+      });
+
+      if (!existingItem || existingItem.deletedAt) {
+        return res.status(404).json({ error: "Not found or already deleted" });
+      }
+
+      await this.getModelClient().update({
+        where: { id: req.params.id },
+        data: { deletedAt: new Date() },
+      });
+
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  restore = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const existingItem = await this.getModelClient().findUnique({
+        where: { id: req.params.id },
+      });
+
+      if (!existingItem || !existingItem.deletedAt) {
+        return res.status(404).json({ error: "Not found or not deleted" });
+      }
+
+      await this.getModelClient().update({
+        where: { id: req.params.id },
+        data: { deletedAt: null },
+      });
+
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // ========================
+  // Bulk Operations
+  // ========================
+  bulkCreate = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const items = req.body; // Expects an array of items
+      const validatedItems = await Promise.all(
+        items.map((item: any) => this._validateWithModelSchema(item))
+      );
+
+      const nestedItems = items.map((item: any) =>
+        this._processNestedFields(item, false)
+      );
+
+      const createdItems = await Promise.all(
+        validatedItems.map((validatedData, index) =>
+          this.getModelClient().create({
+            data: {
+              ...validatedData,
+              ...nestedItems[index],
+            },
+          })
+        )
+      );
+
+      res.status(201).json(createdItems);
+    } catch (error: any) {
+      if (error.message.startsWith("[")) {
+        res.status(400).json({
+          error: "Validation failed",
+          details: JSON.parse(error.message),
+        });
+      } else {
+        next(error);
+      }
+    }
+  };
+
+  bulkUpdate = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const updates = req.body; // Expects an array of { id, ...data }
+      const validatedUpdates = await Promise.all(
+        updates.map((update: any) =>
+          this._validateWithModelSchema(update.data, true)
+        )
+      );
+
+      const nestedUpdates = updates.map((update: any) =>
+        this._processNestedFields(update.data, true)
+      );
+
+      const updatedItems = await Promise.all(
+        updates.map((update: any, index: number) =>
+          this.getModelClient().update({
+            where: { id: update.id },
+            data: {
+              ...validatedUpdates[index],
+              ...nestedUpdates[index],
+            },
+          })
+        )
+      );
+
+      res.json(updatedItems);
+    } catch (error: any) {
+      if (error.message.startsWith("[")) {
+        res.status(400).json({
+          error: "Validation failed",
+          details: JSON.parse(error.message),
+        });
+      } else {
+        next(error);
+      }
+    }
+  };
+
+  bulkSoftDelete = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const ids = req.body.ids; // Expects an array of IDs
+      const result = await this.getModelClient().updateMany({
+        where: { id: { in: ids }, deletedAt: null }, // Only soft-delete non-deleted items
+        data: { deletedAt: new Date() },
+      });
+
+      res.json({ count: result.count });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  bulkRestore = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const ids = req.body.ids; // Expects an array of IDs
+      const result = await this.getModelClient().updateMany({
+        where: { id: { in: ids }, deletedAt: { not: null } }, // Only restore soft-deleted items
+        data: { deletedAt: null },
+      });
+
+      res.json({ count: result.count });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  bulkHardDelete = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const ids = req.body.ids; // Expects an array of IDs
+      const existingItems = await this.getModelClient().findMany({
+        where: { id: { in: ids } },
+      });
+
+      // Clean up files if needed
+      if (this.model.fileFields?.length) {
+        for (const item of existingItems) {
+          for (const field of this.model.fileFields) {
+            if (item[field]) {
+              const key = extractS3Key(item[field]);
+              if (key) await deleteFile(key).catch(console.error);
+            }
+          }
+        }
+      }
+
+      const result = await this.getModelClient().deleteMany({
+        where: { id: { in: ids } },
+      });
+
+      res.json({ count: result.count });
     } catch (error) {
       next(error);
     }
