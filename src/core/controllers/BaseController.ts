@@ -1,3 +1,4 @@
+import { Request, Response, NextFunction } from "express";
 import { validateWithZod } from "../../utils/validation.js";
 import { DatabaseConnection } from "../../core/db/database.js";
 import {
@@ -7,7 +8,6 @@ import {
 } from "../middlewares/uploadMiddleware.js";
 import { deleteFile } from "../../utils/s3Upload.js";
 import { PrismaClient } from "@prisma/client";
-import { Request, Response, NextFunction } from "express";
 
 // Type for the model instance passed to constructor
 interface PrismaModel {
@@ -292,12 +292,8 @@ export class BaseController {
           totalPages: Math.max(1, Math.ceil(total / queryOptions.take)),
         },
       });
-    } catch (error: any) {
-      if (error.message.includes("Invalid JSON")) {
-        res.status(400).json({ error: error.message });
-      } else {
-        next(error);
-      }
+    } catch (error) {
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -322,14 +318,10 @@ export class BaseController {
         ...(include && { include: JSON.parse(include) }),
       });
 
-      if (!item) return res.status(404).json({ error: "Not found" });
+      if (!item) throw new Error("Not found");
       res.json(item);
-    } catch (error: any) {
-      if (error.message.includes("Invalid JSON")) {
-        res.status(400).json({ error: error.message });
-      } else {
-        next(error);
-      }
+    } catch (error) {
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -346,15 +338,8 @@ export class BaseController {
       });
 
       res.status(201).json(newItem);
-    } catch (error: any) {
-      if (error.message.startsWith("[")) {
-        res.status(400).json({
-          error: "Validation failed",
-          details: JSON.parse(error.message),
-        });
-      } else {
-        next(error);
-      }
+    } catch (error) {
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -371,17 +356,10 @@ export class BaseController {
         },
       });
 
-      if (!updatedItem) return res.status(404).json({ error: "Not found" });
+      if (!updatedItem) throw new Error("Not found");
       res.json(updatedItem);
-    } catch (error: any) {
-      if (error.message.startsWith("[")) {
-        res.status(400).json({
-          error: "Validation failed",
-          details: JSON.parse(error.message),
-        });
-      } else {
-        next(error);
-      }
+    } catch (error) {
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -392,9 +370,7 @@ export class BaseController {
         where: { id: req.params.id },
       });
 
-      if (!existingItem) {
-        return res.status(404).json({ error: "Not found" });
-      }
+      if (!existingItem) throw new Error("Not found");
 
       if (this.model.fileFields?.length) {
         for (const field of this.model.fileFields) {
@@ -415,7 +391,7 @@ export class BaseController {
 
       res.status(204).end();
     } catch (error) {
-      next(error);
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -429,7 +405,7 @@ export class BaseController {
       });
 
       if (!existingItem || existingItem.deletedAt) {
-        return res.status(404).json({ error: "Not found or already deleted" });
+        throw new Error("Not found or already deleted");
       }
 
       await this.getModelClient().update({
@@ -439,7 +415,7 @@ export class BaseController {
 
       res.status(204).end();
     } catch (error) {
-      next(error);
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -450,7 +426,7 @@ export class BaseController {
       });
 
       if (!existingItem || !existingItem.deletedAt) {
-        return res.status(404).json({ error: "Not found or not deleted" });
+        throw new Error("Not found or not deleted");
       }
 
       await this.getModelClient().update({
@@ -460,7 +436,7 @@ export class BaseController {
 
       res.status(204).end();
     } catch (error) {
-      next(error);
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -490,15 +466,8 @@ export class BaseController {
       );
 
       res.status(201).json(createdItems);
-    } catch (error: any) {
-      if (error.message.startsWith("[")) {
-        res.status(400).json({
-          error: "Validation failed",
-          details: JSON.parse(error.message),
-        });
-      } else {
-        next(error);
-      }
+    } catch (error) {
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -528,15 +497,8 @@ export class BaseController {
       );
 
       res.json(updatedItems);
-    } catch (error: any) {
-      if (error.message.startsWith("[")) {
-        res.status(400).json({
-          error: "Validation failed",
-          details: JSON.parse(error.message),
-        });
-      } else {
-        next(error);
-      }
+    } catch (error) {
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -550,7 +512,7 @@ export class BaseController {
 
       res.json({ count: result.count });
     } catch (error) {
-      next(error);
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -564,7 +526,7 @@ export class BaseController {
 
       res.json({ count: result.count });
     } catch (error) {
-      next(error);
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -593,7 +555,7 @@ export class BaseController {
 
       res.json({ count: result.count });
     } catch (error) {
-      next(error);
+      next(error); // Delegate to errorHandler
     }
   };
 
@@ -618,15 +580,8 @@ export class BaseController {
         });
 
         res.status(201).json(newItem);
-      } catch (error: any) {
-        if (error.message.startsWith("[")) {
-          res.status(400).json({
-            error: "Validation failed",
-            details: JSON.parse(error.message),
-          });
-        } else {
-          next(error);
-        }
+      } catch (error) {
+        next(error); // Delegate to errorHandler
       }
     },
   ];
@@ -665,17 +620,10 @@ export class BaseController {
           },
         });
 
-        if (!updatedItem) return res.status(404).json({ error: "Not found" });
+        if (!updatedItem) throw new Error("Not found");
         res.json(updatedItem);
-      } catch (error: any) {
-        if (error.message.startsWith("[")) {
-          res.status(400).json({
-            error: "Validation failed",
-            details: JSON.parse(error.message),
-          });
-        } else {
-          next(error);
-        }
+      } catch (error) {
+        next(error); // Delegate to errorHandler
       }
     },
   ];

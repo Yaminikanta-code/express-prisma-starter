@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../../utils/logger.js";
 
-interface ValidationError {
+// Define error types for better type safety
+interface ValidationErrorDetail {
   path: string;
   message: string;
   code: string;
@@ -10,79 +11,83 @@ interface ValidationError {
 interface ErrorResponse {
   error: string;
   message?: string;
-  details?: ValidationError[];
-  field?: string;
+  details?: ValidationErrorDetail[];
   stack?: string;
 }
 
-interface PrismaConflictError extends Error {
-  code: "P2002";
-  meta?: {
-    target?: string[];
-  };
-}
-
-interface PrismaValidationError extends Error {
-  name: "PrismaClientValidationError";
-}
-
+/**
+ * Centralized error handler middleware.
+ * Formats errors consistently and logs them.
+ */
 export const errorHandler = (
-  err: Error | PrismaConflictError | PrismaValidationError,
+  err: Error,
   req: Request,
   res: Response,
   next: NextFunction
 ): Response => {
+  // Log the error for debugging
   logger.error(err.stack || err.message);
 
-  // Handle Zod validation errors
+  // Handle Zod validation errors (thrown by BaseModel/BaseController)
   if (err.message.startsWith("[")) {
     try {
-      const details: ValidationError[] = JSON.parse(err.message);
+      const details: ValidationErrorDetail[] = JSON.parse(err.message);
       return res.status(400).json({
         error: "Validation failed",
         details,
       } as ErrorResponse);
     } catch (parseError) {
-      logger.error("Failed to parse error message:", parseError);
+      logger.error("Failed to parse validation error:", parseError);
+      return res.status(400).json({
+        error: "Validation failed",
+        message: err.message,
+      } as ErrorResponse);
     }
   }
 
-  // Handle Prisma unique constraint violations
-  if ("code" in err && err.code === "P2002") {
-    const field = err.meta?.target?.[0] || "field";
-    return res.status(409).json({
-      error: "Duplicate field",
-      message: `${field} already exists`,
-      field,
-    } as ErrorResponse);
+  // Handle custom errors (e.g., ValidationError, DatabaseError)
+  switch (err.name) {
+    case "ValidationError":
+      return res.status(400).json({
+        error: "Validation failed",
+        message: err.message,
+      } as ErrorResponse);
+
+    case "DatabaseError":
+    case "RawQueryError":
+      return res.status(400).json({
+        error: "Database operation failed",
+        message: err.message,
+      } as ErrorResponse);
+
+    case "NotFoundError":
+      return res.status(404).json({
+        error: "Not found",
+        message: err.message,
+      } as ErrorResponse);
+
+    default:
+      // Handle generic errors (e.g., Prisma errors, unhandled exceptions)
+      const statusCode =
+        "statusCode" in err && typeof err.statusCode === "number"
+          ? err.statusCode
+          : 500;
+      const message =
+        statusCode === 500 ? "Internal Server Error" : err.message;
+
+      return res.status(statusCode).json({
+        error: message,
+        ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+      } as ErrorResponse);
   }
-
-  // Handle Prisma validation errors
-  if (err.name === "PrismaClientValidationError") {
-    return res.status(400).json({
-      error: "Validation failed",
-      message: err.message.split("\n").slice(-1)[0].trim(),
-    } as ErrorResponse);
-  }
-
-  // Handle all other errors
-  const statusCode =
-    "statusCode" in err && typeof err.statusCode === "number"
-      ? err.statusCode
-      : 500;
-  const message = statusCode === 500 ? "Internal Server Error" : err.message;
-
-  const response: ErrorResponse = {
-    error: message,
-    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
-  };
-
-  return res.status(statusCode).json(response);
 };
 
+/**
+ * 404 Not Found handler.
+ */
 export const notFoundHandler = (req: Request, res: Response): Response => {
   return res.status(404).json({
     error: "Not Found",
-    message: `Path ${req.originalUrl} not found`,
+    message: `Route ${req.originalUrl} does not exist.`,
   } as ErrorResponse);
 };
