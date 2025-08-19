@@ -6,6 +6,7 @@ import {
   notFoundHandler,
 } from "./core/middlewares/errorHandler.js";
 import { setupSwagger } from "./core/middlewares/setupSwagger.js";
+import { createApiRouter } from "./apiRouter.js";
 // import { createProductRouter } from "./domains/products/ProductRoute";
 
 export async function createApp(): Promise<Express> {
@@ -36,8 +37,8 @@ export async function createApp(): Promise<Express> {
     }
   });
 
-  // Product routes
-  //   app.use("/products", createProductRouter());
+  // API routes (delegated to apiRouter.ts)
+  app.use("/api", createApiRouter());
 
   // Swagger documentation
   setupSwagger(app);
