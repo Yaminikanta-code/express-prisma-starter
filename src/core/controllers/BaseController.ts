@@ -18,6 +18,26 @@ interface PrismaModel {
   getPartialZodSchema: () => any;
 }
 
+// Security configuration interface
+interface QuerySecurityConfig {
+  allowedFilters: string[];
+  allowedSortFields: string[];
+  allowedIncludeRelations: string[];
+  allowedSelectFields: string[];
+  maxIncludeDepth: number;
+  maxLimit: number;
+}
+
+// Default security configuration (very restrictive by default)
+const DEFAULT_SECURITY_CONFIG: QuerySecurityConfig = {
+  allowedFilters: [],
+  allowedSortFields: [],
+  allowedIncludeRelations: [],
+  allowedSelectFields: [],
+  maxIncludeDepth: 1,
+  maxLimit: 50,
+};
+
 // Augment Express Request type to include uploadedFiles
 declare global {
   namespace Express {
@@ -49,16 +69,112 @@ interface Link {
 export class BaseController {
   private prisma: PrismaClient;
   private model: PrismaModel;
-  private maxLimit: number;
+  private securityConfig: QuerySecurityConfig;
   private validRelations: string[];
 
-  constructor(model: PrismaModel) {
+  constructor(
+    model: PrismaModel,
+    securityConfig: Partial<QuerySecurityConfig> = {}
+  ) {
     this.prisma = DatabaseConnection.getClient();
     this.model = model;
-    this.maxLimit = 100;
+    this.securityConfig = { ...DEFAULT_SECURITY_CONFIG, ...securityConfig };
     this.validRelations = Array.isArray(model.relationFields)
       ? model.relationFields
       : [];
+  }
+
+  // ========================
+  // Security Validation Methods
+  // ========================
+  private _validateFilterFields(where: Record<string, any>): void {
+    if (!where) return;
+
+    Object.keys(where).forEach((key) => {
+      if (key === "AND" || key === "OR" || key === "NOT") {
+        // Handle logical operators recursively
+        if (Array.isArray(where[key])) {
+          where[key].forEach((condition: any) =>
+            this._validateFilterFields(condition)
+          );
+        } else if (typeof where[key] === "object") {
+          this._validateFilterFields(where[key]);
+        }
+      } else if (
+        key !== "deletedAt" &&
+        !this.securityConfig.allowedFilters.includes(key)
+      ) {
+        throw new Error(`Filtering by '${key}' is not allowed`);
+      }
+    });
+  }
+
+  private _validateSortFields(orderBy: Record<string, "asc" | "desc">): void {
+    Object.keys(orderBy).forEach((key) => {
+      if (!this.securityConfig.allowedSortFields.includes(key)) {
+        throw new Error(`Sorting by '${key}' is not allowed`);
+      }
+    });
+  }
+
+  private _validateIncludeRelations(
+    include: any,
+    currentDepth: number = 1
+  ): void {
+    if (!include || currentDepth > this.securityConfig.maxIncludeDepth) {
+      if (currentDepth > this.securityConfig.maxIncludeDepth) {
+        throw new Error("Include depth exceeds maximum allowed");
+      }
+      return;
+    }
+
+    Object.keys(include).forEach((key) => {
+      if (!this.securityConfig.allowedIncludeRelations.includes(key)) {
+        throw new Error(`Including '${key}' relation is not allowed`);
+      }
+
+      // Recursively validate nested includes
+      if (
+        include[key] &&
+        typeof include[key] === "object" &&
+        include[key].include
+      ) {
+        this._validateIncludeRelations(include[key].include, currentDepth + 1);
+      }
+    });
+  }
+
+  private _validateSelectFields(select: Record<string, boolean>): void {
+    Object.keys(select).forEach((key) => {
+      if (!this.securityConfig.allowedSelectFields.includes(key)) {
+        throw new Error(`Selecting field '${key}' is not allowed`);
+      }
+    });
+  }
+
+  private _validateQueryParams(params: any): void {
+    if (params.where) {
+      this._validateFilterFields(params.where);
+    }
+
+    if (params.orderBy) {
+      this._validateSortFields(params.orderBy);
+    }
+
+    if (params.include) {
+      this._validateIncludeRelations(params.include);
+    }
+
+    if (params.select) {
+      this._validateSelectFields(params.select);
+    }
+
+    // Validate limit
+    if (params.take > this.securityConfig.maxLimit) {
+      throw new Error(
+        `Limit exceeds maximum allowed value of ${this.securityConfig.maxLimit}`
+      );
+    }
   }
 
   // ========================
@@ -119,7 +235,7 @@ export class BaseController {
     );
     const parsedLimit = Math.min(
       typeof limit === "string" ? parseInt(limit, 10) : Number(limit) || 10,
-      this.maxLimit
+      this.securityConfig.maxLimit
     );
     const skip = (parsedPage - 1) * parsedLimit;
 
@@ -173,7 +289,7 @@ export class BaseController {
       }
     }
 
-    return {
+    const queryParams = {
       skip,
       take: parsedLimit,
       ...(Object.keys(orderBy).length > 0 && { orderBy }),
@@ -181,6 +297,11 @@ export class BaseController {
       ...(parsedInclude && { include: parsedInclude }),
       where: Object.keys(where).length > 0 ? where : undefined,
     };
+
+    // Apply security validation
+    this._validateQueryParams(queryParams);
+
+    return queryParams;
   }
 
   private _processNestedFields(
@@ -270,7 +391,7 @@ export class BaseController {
     }
 
     return links;
-  } //add to add methods
+  }
 
   // ========================
   // Public CRUD Methods
@@ -303,19 +424,31 @@ export class BaseController {
         fields?: string;
         include?: string;
       };
-      let select: Record<string, boolean> | undefined;
 
+      let select: Record<string, boolean> | undefined;
       if (fields) {
         select = fields.split(",").reduce((acc, field) => {
           acc[field.trim()] = true;
           return acc;
         }, {} as Record<string, boolean>);
+        this._validateSelectFields(select);
+      }
+
+      let parsedInclude: any;
+      if (include) {
+        try {
+          parsedInclude =
+            typeof include === "string" ? JSON.parse(include) : include;
+          this._validateIncludeRelations(parsedInclude);
+        } catch {
+          throw new Error("Invalid JSON include parameter");
+        }
       }
 
       const item = await this.getModelClient().findUnique({
         where: { id: req.params.id },
         ...(select && { select }),
-        ...(include && { include: JSON.parse(include) }),
+        ...(parsedInclude && { include: parsedInclude }),
       });
 
       if (!item) throw new Error("Not found");
@@ -628,3 +761,59 @@ export class BaseController {
     },
   ];
 }
+
+// Example usage in a specific controller
+// export class UserController extends SecureBaseController {
+//   constructor() {
+//     // You'll need to define these schemas in your actual implementation
+//     const userSchema = {} as any;
+//     const userPartialSchema = {} as any;
+
+//     const userModel = {
+//       modelName: "user",
+//       relationFields: ["posts", "profile"],
+//       fileFields: ["avatar"],
+//       getZodSchema: () => userSchema,
+//       getPartialZodSchema: () => userPartialSchema,
+//     };
+
+//     const securityConfig: Partial<QuerySecurityConfig> = {
+//       allowedFilters: ["email", "status", "createdAt", "updatedAt"],
+//       allowedSortFields: ["email", "createdAt", "updatedAt"],
+//       allowedIncludeRelations: ["posts", "profile"],
+//       allowedSelectFields: ["id", "email", "name", "createdAt", "updatedAt"],
+//       maxIncludeDepth: 2,
+//       maxLimit: 100,
+//     };
+
+//     super(userModel, securityConfig);
+//   }
+// }
+
+// // Example usage in a product controller
+// export class ProductController extends SecureBaseController {
+//   constructor() {
+//     // You'll need to define these schemas in your actual implementation
+//     const productSchema = {} as any;
+//     const productPartialSchema = {} as any;
+
+//     const productModel = {
+//       modelName: "product",
+//       relationFields: ["category", "reviews"],
+//       fileFields: ["image"],
+//       getZodSchema: () => productSchema,
+//       getPartialZodSchema: () => productPartialSchema,
+//     };
+
+//     const securityConfig: Partial<QuerySecurityConfig> = {
+//       allowedFilters: ["name", "price", "categoryId", "status"],
+//       allowedSortFields: ["name", "price", "createdAt"],
+//       allowedIncludeRelations: ["category"],
+//       allowedSelectFields: ["id", "name", "price", "description", "createdAt"],
+//       maxIncludeDepth: 1,
+//       maxLimit: 50,
+//     };
+
+//     super(productModel, securityConfig);
+//   }
+// }
