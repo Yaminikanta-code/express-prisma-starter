@@ -26,6 +26,7 @@ interface QuerySecurityConfig {
   allowedSelectFields: string[];
   maxIncludeDepth: number;
   maxLimit: number;
+  hasSoftDelete: boolean; // Added hasSoftDelete
 }
 
 // Default security configuration (very restrictive by default)
@@ -36,6 +37,7 @@ const DEFAULT_SECURITY_CONFIG: QuerySecurityConfig = {
   allowedSelectFields: [],
   maxIncludeDepth: 1,
   maxLimit: 50,
+  hasSoftDelete: false, // Default to false
 };
 
 // Augment Express Request type to include uploadedFiles
@@ -76,7 +78,13 @@ export class BaseController {
     model: PrismaModel,
     securityConfig: Partial<QuerySecurityConfig> = {}
   ) {
-    this.prisma = DatabaseConnection.getClient();
+    this.prisma = new Proxy({} as PrismaClient, {
+      get: (target, prop: keyof PrismaClient) => {
+        const client = DatabaseConnection.getClient();
+        const value = client[prop];
+        return typeof value === "function" ? value.bind(client) : value;
+      },
+    });
     this.model = model;
     this.securityConfig = { ...DEFAULT_SECURITY_CONFIG, ...securityConfig };
     this.validRelations = Array.isArray(model.relationFields)
@@ -259,33 +267,112 @@ export class BaseController {
       }, {} as Record<string, boolean>);
     }
 
-    // Exclude soft-deleted records unless `withDeleted` is true
+    // Exclude soft-deleted records only if soft delete is supported AND not requesting deleted records
     const where: Record<string, any> = {
-      ...(!withDeleted && { deletedAt: null }),
       ...jsonFilter,
+    };
+
+    if (this.securityConfig.hasSoftDelete && !withDeleted) {
+      where.deletedAt = null;
+    }
+
+    // Generic value parser that detects type automatically
+    const parseValue = (value: any): any => {
+      if (typeof value !== "string") {
+        return value;
+      }
+
+      // Handle boolean values
+      if (value.toLowerCase() === "true") return true;
+      if (value.toLowerCase() === "false") return false;
+
+      // Handle null values
+      if (value.toLowerCase() === "null") return null;
+
+      // Handle numeric values (integers and floats)
+      if (/^-?\d+$/.test(value)) {
+        return parseInt(value, 10);
+      }
+      if (/^-?\d+\.\d+$/.test(value)) {
+        return parseFloat(value);
+      }
+
+      // Handle ISO date strings and common date formats
+      const date = new Date(value);
+      if (!isNaN(date.getTime())) {
+        return date;
+      }
+
+      // Handle JSON objects/arrays
+      if (
+        (value.startsWith("{") && value.endsWith("}")) ||
+        (value.startsWith("[") && value.endsWith("]"))
+      ) {
+        try {
+          return JSON.parse(value);
+        } catch {
+          // If JSON parsing fails, return as string
+        }
+      }
+
+      // Return as string for everything else
+      return value;
+    };
+
+    // Parse operator values in filter conditions
+    const parseOperatorValue = (operator: string, value: string): any => {
+      // For string operations, keep as string to avoid unwanted conversions
+      if (
+        ["contains", "startsWith", "endsWith", "search", "mode"].includes(
+          operator
+        )
+      ) {
+        return value;
+      }
+
+      // For array operations, parse each element
+      if (["in", "notIn"].includes(operator)) {
+        return value.split(",").map((item) => parseValue(item.trim()));
+      }
+
+      // For other operations, parse the value normally
+      return parseValue(value);
     };
 
     for (const [key, value] of Object.entries(simpleFilters)) {
       if (typeof value === "string" && value.includes(":")) {
         const [operator, val] = value.split(":");
+        const parsedVal = parseOperatorValue(operator, val);
+
         switch (operator) {
           case "gt":
           case "gte":
           case "lt":
           case "lte":
+          case "equals":
+          case "not":
+            where[key] = { ...where[key], [operator]: parsedVal };
+            break;
           case "contains":
           case "startsWith":
           case "endsWith":
-            where[key] = { ...where[key], [operator]: val };
+          case "search":
+            where[key] = { ...where[key], [operator]: val }; // Keep original string
             break;
           case "in":
-            where[key] = { ...where[key], in: val.split(",") };
+          case "notIn":
+            where[key] = { ...where[key], [operator]: parsedVal };
+            break;
+          case "mode":
+            where[key] = { ...where[key], [operator]: val }; // Keep string for mode
             break;
           default:
-            where[key] = value;
+            // For custom operators, try to parse the value
+            where[key] = { ...where[key], [operator]: parseValue(val) };
         }
       } else {
-        where[key] = value;
+        // Parse simple equality values
+        where[key] = parseValue(value);
       }
     }
 
@@ -376,18 +463,24 @@ export class BaseController {
           href: `${baseUrl}/${id}`,
           rel: "delete",
           method: "DELETE",
-        },
-        {
-          href: `${baseUrl}/${id}/soft`,
-          rel: "soft-delete",
-          method: "DELETE",
-        },
-        {
-          href: `${baseUrl}/${id}/restore`,
-          rel: "restore",
-          method: "POST",
         }
       );
+
+      // Only add soft delete links if supported
+      if (this.securityConfig.hasSoftDelete) {
+        links.push(
+          {
+            href: `${baseUrl}/${id}/soft`,
+            rel: "soft-delete",
+            method: "DELETE",
+          },
+          {
+            href: `${baseUrl}/${id}/restore`,
+            rel: "restore",
+            method: "POST",
+          }
+        );
+      }
     }
 
     return links;
@@ -533,6 +626,10 @@ export class BaseController {
   // ========================
   softDelete = async (req: Request, res: Response, next: NextFunction) => {
     try {
+      if (!this.securityConfig.hasSoftDelete) {
+        throw new Error("Soft delete is not supported for this model");
+      }
+
       const existingItem = await this.getModelClient().findUnique({
         where: { id: req.params.id },
       });
@@ -554,6 +651,10 @@ export class BaseController {
 
   restore = async (req: Request, res: Response, next: NextFunction) => {
     try {
+      if (!this.securityConfig.hasSoftDelete) {
+        throw new Error("Restore is not supported for this model");
+      }
+
       const existingItem = await this.getModelClient().findUnique({
         where: { id: req.params.id },
       });
@@ -579,34 +680,123 @@ export class BaseController {
   bulkCreate = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const items = req.body; // Expects an array of items
+
+      // Validate request body structure
+      if (!Array.isArray(items)) {
+        return res.status(400).json({
+          error: "Invalid request body. Expected an array of items.",
+          example: [{ name: "Item 1" }, { name: "Item 2" }],
+        });
+      }
+
+      if (items.length === 0) {
+        return res.status(400).json({
+          error: "Items array cannot be empty",
+        });
+      }
+
+      // Validate each item before processing
+      const invalidItems = items.filter(
+        (item) => !item || typeof item !== "object" || Array.isArray(item)
+      );
+
+      if (invalidItems.length > 0) {
+        return res.status(400).json({
+          error: "All items must be valid objects",
+          invalidItems,
+        });
+      }
+
+      // Validate items against schema
       const validatedItems = await Promise.all(
         items.map((item: any) => this._validateWithModelSchema(item))
       );
 
-      const nestedItems = items.map((item: any) =>
-        this._processNestedFields(item, false)
+      // Process nested fields
+      const processedItems = validatedItems.map((validatedData) =>
+        this._processNestedFields(validatedData, false)
       );
 
-      const createdItems = await Promise.all(
-        validatedItems.map((validatedData, index) =>
+      // Create items with individual error handling
+      const creationResults = await Promise.allSettled(
+        processedItems.map((processedData) =>
           this.getModelClient().create({
-            data: {
-              ...validatedData,
-              ...nestedItems[index],
-            },
+            data: processedData,
           })
         )
       );
 
-      res.status(201).json(createdItems);
+      // Process results
+      const successfulCreations = creationResults
+        .filter(
+          (result): result is PromiseFulfilledResult<any> =>
+            result.status === "fulfilled"
+        )
+        .map((result) => result.value);
+
+      const failedCreations = creationResults
+        .filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected"
+        )
+        .map((result, index) => ({
+          originalData: items[index],
+          error: result.reason.message || "Creation failed",
+        }));
+
+      if (failedCreations.length > 0) {
+        // Partial success response
+        return res.status(207).json({
+          success: true,
+          createdCount: successfulCreations.length,
+          failedCount: failedCreations.length,
+          createdItems: successfulCreations,
+          failures: failedCreations,
+          message: `Successfully created ${successfulCreations.length} out of ${items.length} items`,
+        });
+      }
+
+      // Full success response
+      res.status(201).json({
+        success: true,
+        count: successfulCreations.length,
+        items: successfulCreations,
+        message: `Successfully created ${successfulCreations.length} items`,
+      });
     } catch (error) {
-      next(error); // Delegate to errorHandler
+      next(error);
     }
   };
-
   bulkUpdate = async (req: Request, res: Response, next: NextFunction) => {
     try {
+      // Add proper validation for request body
+      if (!req.body || !Array.isArray(req.body)) {
+        return res.status(400).json({
+          error: "Request body must be an array of update objects",
+        });
+      }
+
       const updates = req.body; // Expects an array of { id, ...data }
+
+      if (updates.length === 0) {
+        return res.status(400).json({
+          error: "Update array cannot be empty",
+        });
+      }
+
+      // Validate each update object has required fields
+      const invalidUpdates = updates.filter(
+        (update) =>
+          !update || typeof update !== "object" || !update.id || !update.data
+      );
+
+      if (invalidUpdates.length > 0) {
+        return res.status(400).json({
+          error: "Each update must contain 'id' and 'data' fields",
+          invalidUpdates,
+        });
+      }
+
       const validatedUpdates = await Promise.all(
         updates.map((update: any) =>
           this._validateWithModelSchema(update.data, true)
@@ -637,27 +827,108 @@ export class BaseController {
 
   bulkSoftDelete = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const ids = req.body.ids; // Expects an array of IDs
+      if (!this.securityConfig.hasSoftDelete) {
+        throw new Error("Bulk soft delete is not supported for this model");
+      }
+
+      // Add proper validation for request body
+      if (!req.body || !req.body.ids) {
+        return res.status(400).json({
+          error: "Missing 'ids' field in request body",
+        });
+      }
+
+      const { ids } = req.body;
+
+      // Validate that ids is an array
+      if (!Array.isArray(ids)) {
+        return res.status(400).json({
+          error: "'ids' must be an array",
+        });
+      }
+
+      // Validate that all IDs are valid (adjust based on your ID type)
+      if (ids.length === 0) {
+        return res.status(400).json({
+          error: "'ids' array cannot be empty",
+        });
+      }
+
+      // Optional: Validate ID format (example for numeric IDs)
+      const invalidIds = ids.filter(
+        (id) => typeof id !== "number" || id <= 0 || !Number.isInteger(id)
+      );
+
+      if (invalidIds.length > 0) {
+        return res.status(400).json({
+          error: "Invalid ID format",
+          invalidIds,
+        });
+      }
+
       const result = await this.getModelClient().updateMany({
-        where: { id: { in: ids }, deletedAt: null }, // Only soft-delete non-deleted items
-        data: { deletedAt: new Date() },
+        where: {
+          id: { in: ids },
+          deletedAt: null,
+        },
+        data: {
+          deletedAt: new Date(),
+        },
       });
 
-      res.json({ count: result.count });
+      res.json({
+        success: true,
+        count: result.count,
+        message: `Soft deleted ${result.count} item(s)`,
+      });
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
   };
-
   bulkRestore = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const ids = req.body.ids; // Expects an array of IDs
+      if (!this.securityConfig.hasSoftDelete) {
+        throw new Error("Bulk restore is not supported for this model");
+      }
+
+      // Add proper validation for request body
+      if (!req.body || !req.body.ids) {
+        return res.status(400).json({
+          error: "Missing 'ids' field in request body",
+        });
+      }
+
+      const { ids } = req.body;
+
+      // Validate that ids is an array
+      if (!Array.isArray(ids)) {
+        return res.status(400).json({
+          error: "'ids' must be an array",
+        });
+      }
+
+      // Validate that all IDs are valid
+      if (ids.length === 0) {
+        return res.status(400).json({
+          error: "'ids' array cannot be empty",
+        });
+      }
+
       const result = await this.getModelClient().updateMany({
-        where: { id: { in: ids }, deletedAt: { not: null } }, // Only restore soft-deleted items
-        data: { deletedAt: null },
+        where: {
+          id: { in: ids },
+          deletedAt: { not: null }, // Only restore soft-deleted items
+        },
+        data: {
+          deletedAt: null,
+        },
       });
 
-      res.json({ count: result.count });
+      res.json({
+        success: true,
+        count: result.count,
+        message: `Restored ${result.count} item(s)`,
+      });
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -665,7 +936,29 @@ export class BaseController {
 
   bulkHardDelete = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const ids = req.body.ids; // Expects an array of IDs
+      // Add proper validation for request body
+      if (!req.body || !req.body.ids) {
+        return res.status(400).json({
+          error: "Missing 'ids' field in request body",
+        });
+      }
+
+      const { ids } = req.body;
+
+      // Validate that ids is an array
+      if (!Array.isArray(ids)) {
+        return res.status(400).json({
+          error: "'ids' must be an array",
+        });
+      }
+
+      // Validate that all IDs are valid
+      if (ids.length === 0) {
+        return res.status(400).json({
+          error: "'ids' array cannot be empty",
+        });
+      }
+
       const existingItems = await this.getModelClient().findMany({
         where: { id: { in: ids } },
       });
@@ -686,9 +979,13 @@ export class BaseController {
         where: { id: { in: ids } },
       });
 
-      res.json({ count: result.count });
+      res.json({
+        success: true,
+        count: result.count,
+        message: `Permanently deleted ${result.count} item(s)`,
+      });
     } catch (error) {
-      next(error); // Delegate to errorHandler
+      next(error);
     }
   };
 
