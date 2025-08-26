@@ -5,6 +5,7 @@ import {
   errorHandler,
   notFoundHandler,
 } from "./core/middlewares/errorHandler.js";
+import { httpLogger } from "./utils/logger.js";
 import { setupSwagger } from "./core/middlewares/setupSwagger.js";
 import { createApiRouter } from "./apiRouter.js";
 // import { createProductRouter } from "./domains/products/ProductRoute";
@@ -14,6 +15,7 @@ export async function createApp(): Promise<Express> {
   const app: Express = express();
 
   // Middleware
+  app.use(httpLogger);
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
