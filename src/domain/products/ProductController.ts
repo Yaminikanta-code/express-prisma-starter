@@ -1,14 +1,14 @@
 import { BaseController } from "../../core/controllers/BaseController.js";
-import { Product } from "./Products.js";
+import { Product, Products } from "./Products.js";
 
 // Create the configuration object expected by BaseController
-const productModelConfig = {
-  modelName: Product.modelName.toLowerCase(), // Prisma expects lowercase model names
-  relationFields: Product.relationFields,
-  fileFields: Product.fileFields,
-  getZodSchema: () => Product.zodSchema,
-  getPartialZodSchema: () => Product.zodSchema.partial(),
-};
+// const productModelConfig = {
+//   modelName: Product.modelName.toLowerCase(), // Prisma expects lowercase model names
+//   relationFields: Product.relationFields,
+//   fileFields: Product.fileFields,
+//   getZodSchema: () => Product.zodSchema,
+//   getPartialZodSchema: () => Product.zodSchema.partial(),
+// };
 
 // Optional: Add security configuration
 const productSecurityConfig = {
@@ -30,6 +30,6 @@ const productSecurityConfig = {
 };
 
 export const productController = new BaseController(
-  productModelConfig,
+  Products,
   productSecurityConfig
 );

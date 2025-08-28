@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BaseModel } from "../../core/models/BaseModel.js";
+import { createModelConfigFromModel } from "@/utils/createModelConfigFromBaseModel.js";
 
 export class Product extends BaseModel {
   static modelName = "Product";
@@ -15,3 +16,5 @@ export class Product extends BaseModel {
     stockQuantity: z.number().int().nonnegative().default(0),
   });
 }
+
+export const Products = createModelConfigFromModel(Product);

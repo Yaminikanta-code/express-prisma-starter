@@ -10,7 +10,7 @@ import { deleteFile } from "../../utils/s3Upload.js";
 import { PrismaClient } from "@prisma/client";
 
 // Type for the model instance passed to constructor
-interface PrismaModel {
+export interface PrismaModel {
   modelName: string;
   relationFields: string[];
   fileFields?: string[];
