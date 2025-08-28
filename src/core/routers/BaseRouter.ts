@@ -1,6 +1,5 @@
 import express from "express";
 import { rateLimit, RateLimitRequestHandler } from "express-rate-limit";
-import swaggerUi from "swagger-ui-express";
 import { BaseController } from "../controllers/BaseController.js";
 
 interface RouterConfig {
@@ -8,20 +7,12 @@ interface RouterConfig {
   enableFileRoutes?: boolean;
   enableBulkRoutes?: boolean;
   enableSoftDeleteRoutes?: boolean;
-  enableSwagger?: boolean;
-  apiPrefix?: string;
-  swaggerConfig?: {
-    title?: string;
-    version?: string;
-    description?: string;
-  };
 }
 
 export class BaseRouter {
   private router: express.Router;
   private controller: BaseController;
   private config: RouterConfig;
-  private static swaggerInitialized = false;
 
   constructor(controller: BaseController, config: RouterConfig = {}) {
     this.router = express.Router();
@@ -31,13 +22,10 @@ export class BaseRouter {
       enableFileRoutes: false,
       enableBulkRoutes: true,
       enableSoftDeleteRoutes: true,
-      enableSwagger: false, // Disabled by default for backward compatibility
-      apiPrefix: "/api",
       ...config,
     };
 
     this.setupRoutes();
-    this.setupSwagger();
   }
 
   private setupRoutes(): void {
@@ -76,87 +64,6 @@ export class BaseRouter {
     }
   }
 
-  private setupSwagger(): void {
-    if (!this.config.enableSwagger || BaseRouter.swaggerInitialized) return;
-
-    const spec = {
-      openapi: "3.0.0",
-      info: {
-        title: this.config.swaggerConfig?.title || "API Documentation",
-        version: this.config.swaggerConfig?.version || "1.0.0",
-        description:
-          this.config.swaggerConfig?.description || "Auto-generated API docs",
-      },
-      servers: [{ url: `http://localhost:3000${this.config.apiPrefix}` }],
-      paths: this.generatePathSpecs(),
-      components: {
-        schemas: {
-          Resource: {
-            type: "object",
-            properties: {
-              id: {
-                type: "string",
-                format: "uuid",
-                example: "550e8400-e29b-41d4-a716-446655440000",
-              },
-              createdAt: { type: "string", format: "date-time" },
-            },
-          },
-          ErrorResponse: {
-            type: "object",
-            properties: {
-              error: { type: "string" },
-              details: { type: "array", items: { type: "string" } },
-            },
-          },
-        },
-      },
-    };
-
-    this.router.use("/docs", swaggerUi.serve, swaggerUi.setup(spec));
-    BaseRouter.swaggerInitialized = true;
-  }
-
-  private generatePathSpecs(): Record<string, any> {
-    const paths: Record<string, any> = {};
-    const routeStack = this.router.stack;
-
-    routeStack.forEach((layer) => {
-      if (!layer.route) return;
-
-      const path = layer.route.path;
-      const methods = Object.keys((layer.route as any).methods)
-        .filter((method) => method !== "_all")
-        .map((method) => method.toLowerCase());
-
-      methods.forEach((method) => {
-        if (!paths[path]) paths[path] = {};
-
-        paths[path][method] = {
-          summary: `${method.toUpperCase()} ${path}`,
-          responses: {
-            200: { description: "Success" },
-            400: { $ref: "#/components/schemas/ErrorResponse" },
-            404: { description: "Not Found" },
-          },
-        };
-
-        // Auto-detect path parameters
-        const pathParams = path.match(/:\w+/g);
-        if (pathParams) {
-          paths[path][method].parameters = pathParams.map((param) => ({
-            name: param.slice(1),
-            in: "path",
-            required: true,
-            schema: { type: "string" },
-          }));
-        }
-      });
-    });
-
-    return paths;
-  }
-
   private createRateLimiter(): RateLimitRequestHandler {
     return rateLimit({
       windowMs: 15 * 60 * 1000, // 15 minutes
@@ -169,9 +76,5 @@ export class BaseRouter {
 
   public getRouter(): express.Router {
     return this.router;
-  }
-
-  public getSwaggerPath(): string {
-    return `${this.config.apiPrefix}/docs`;
   }
 }

@@ -66,6 +66,19 @@ interface Link {
   href: string;
   rel: string;
   method: string;
+  type?: string; // Optional: content type
+  title?: string; // Optional: human-readable description
+}
+
+interface HATEOASResponse {
+  //make it  StandardResponse for readability
+  data?: any;
+  meta?: {
+    timestamp: string;
+    operation: string;
+    [key: string]: any;
+  };
+  links: Link[];
 }
 
 export class BaseController {
@@ -432,55 +445,70 @@ export class BaseController {
     return nestedData;
   }
 
-  private _generateLinks(req: Request, id?: string): Link[] {
+  private _generateLinks(req: Request, id?: string, data?: any): Link[] {
     const baseUrl = `${req.protocol}://${req.get("host")}${req.baseUrl}`;
     const links: Link[] = [
       {
         href: `${baseUrl}`,
         rel: "self",
+        method: req.method,
+        title: `Current ${this.model.modelName} operation`,
+      },
+      {
+        href: `${baseUrl}`,
+        rel: "collection",
         method: "GET",
+        title: `Get all ${this.model.modelName}s`,
       },
       {
         href: `${baseUrl}`,
         rel: "create",
         method: "POST",
+        title: `Create new ${this.model.modelName}`,
       },
     ];
 
     if (id) {
-      links.push(
+      const itemLinks: Link[] = [
         {
           href: `${baseUrl}/${id}`,
           rel: "self",
           method: "GET",
+          title: `Get this ${this.model.modelName}`,
         },
         {
           href: `${baseUrl}/${id}`,
           rel: "update",
           method: "PUT",
+          title: `Update this ${this.model.modelName}`,
         },
         {
           href: `${baseUrl}/${id}`,
           rel: "delete",
           method: "DELETE",
-        }
-      );
+          title: `Delete this ${this.model.modelName}`,
+        },
+      ];
 
-      // Only add soft delete links if supported
+      // Only add soft delete links if supported by security config
       if (this.securityConfig.hasSoftDelete) {
-        links.push(
+        itemLinks.push(
           {
             href: `${baseUrl}/${id}/soft`,
             rel: "soft-delete",
             method: "DELETE",
+            title: `Soft delete this ${this.model.modelName}`,
           },
           {
             href: `${baseUrl}/${id}/restore`,
             rel: "restore",
             method: "POST",
+            title: `Restore this ${this.model.modelName}`,
           }
         );
       }
+
+      links.push(...itemLinks);
     }
 
     return links;
@@ -497,15 +525,20 @@ export class BaseController {
         modelClient.findMany(queryOptions),
         modelClient.count({ where: queryOptions.where }),
       ]);
-      res.json({
+      const response: HATEOASResponse = {
         data: items,
         meta: {
           total,
           page: parseInt(req.query.page as string) || 1,
           limit: queryOptions.take,
           totalPages: Math.max(1, Math.ceil(total / queryOptions.take)),
+          timestamp: new Date().toISOString(),
+          operation: "list",
         },
-      });
+        links: this._generateLinks(req),
+      };
+
+      res.json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -545,7 +578,17 @@ export class BaseController {
       });
 
       if (!item) throw new Error("Not found");
-      res.json(item);
+
+      const response: HATEOASResponse = {
+        data: item,
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "retrieve",
+        },
+        links: this._generateLinks(req, req.params.id, item),
+      };
+
+      res.json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -563,7 +606,16 @@ export class BaseController {
         },
       });
 
-      res.status(201).json(newItem);
+      const response: HATEOASResponse = {
+        data: newItem,
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "create",
+        },
+        links: this._generateLinks(req, newItem.id, newItem),
+      };
+
+      res.status(201).json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -583,7 +635,16 @@ export class BaseController {
       });
 
       if (!updatedItem) throw new Error("Not found");
-      res.json(updatedItem);
+      const response: HATEOASResponse = {
+        data: updatedItem,
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "update",
+        },
+        links: this._generateLinks(req, req.params.id, updatedItem),
+      };
+
+      res.json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -615,7 +676,19 @@ export class BaseController {
         where: { id: req.params.id },
       });
 
-      res.status(204).end();
+      const response: HATEOASResponse = {
+        data: {
+          id: req.params.id,
+          message: "Item permanently deleted successfully",
+          deletedAt: new Date().toISOString(),
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "hard_delete",
+        },
+        links: this._generateLinks(req),
+      };
+      res.status(200).json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -643,7 +716,19 @@ export class BaseController {
         data: { deletedAt: new Date() },
       });
 
-      res.status(204).end();
+      const response: HATEOASResponse = {
+        data: {
+          id: req.params.id,
+          message: "Item soft deleted successfully",
+          deletedAt: new Date().toISOString(),
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "soft_delete",
+        },
+        links: this._generateLinks(req, req.params.id),
+      };
+      res.status(200).json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -667,8 +752,19 @@ export class BaseController {
         where: { id: req.params.id },
         data: { deletedAt: null },
       });
-
-      res.status(204).end();
+      const response: HATEOASResponse = {
+        data: {
+          id: req.params.id,
+          message: "Item restored successfully",
+          restoredAt: new Date().toISOString(),
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "restore",
+        },
+        links: this._generateLinks(req, req.params.id),
+      };
+      res.status(200).json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -745,24 +841,50 @@ export class BaseController {
         }));
 
       if (failedCreations.length > 0) {
+        const response: HATEOASResponse = {
+          data: {
+            success: true,
+            createdCount: successfulCreations.length,
+            failedCount: failedCreations.length,
+            createdItems: successfulCreations,
+            failures: failedCreations,
+            message: `Successfully created ${successfulCreations.length} out of ${items.length} items`,
+          },
+
+          links: this._generateLinks(req),
+        };
+
+        return res.status(207).json(response);
         // Partial success response
-        return res.status(207).json({
-          success: true,
-          createdCount: successfulCreations.length,
-          failedCount: failedCreations.length,
-          createdItems: successfulCreations,
-          failures: failedCreations,
-          message: `Successfully created ${successfulCreations.length} out of ${items.length} items`,
-        });
+        // return res.status(207).json({
+        //   success: true,
+        //   createdCount: successfulCreations.length,
+        //   failedCount: failedCreations.length,
+        //   createdItems: successfulCreations,
+        //   failures: failedCreations,
+        //   message: `Successfully created ${successfulCreations.length} out of ${items.length} items`,
+        // });
       }
 
       // Full success response
-      res.status(201).json({
-        success: true,
-        count: successfulCreations.length,
-        items: successfulCreations,
-        message: `Successfully created ${successfulCreations.length} items`,
-      });
+
+      const response: HATEOASResponse = {
+        data: {
+          success: true,
+          count: successfulCreations.length,
+          items: successfulCreations,
+          message: `Successfully created ${successfulCreations.length} items`,
+        },
+        links: this._generateLinks(req),
+      };
+
+      return res.status(201).json(response);
+      // res.status(201).json({
+      //   success: true,
+      //   count: successfulCreations.length,
+      //   items: successfulCreations,
+      //   message: `Successfully created ${successfulCreations.length} items`,
+      // });
     } catch (error) {
       next(error);
     }
@@ -818,8 +940,22 @@ export class BaseController {
           })
         )
       );
+      const response: HATEOASResponse = {
+        data: {
+          success: true,
+          updatedCount: updatedItems.length,
+          updatedItems: updatedItems,
+          message: `Successfully updated ${updatedItems.length} items`,
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "bulk_update",
+          totalAttempted: updates.length,
+        },
+        links: this._generateLinks(req),
+      };
 
-      res.json(updatedItems);
+      res.json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -875,12 +1011,22 @@ export class BaseController {
           deletedAt: new Date(),
         },
       });
+      const response: HATEOASResponse = {
+        data: {
+          success: true,
+          deletedCount: result.count,
+          message: `Soft deleted ${result.count} item(s)`,
+          deletedAt: new Date().toISOString(),
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "bulk_soft_delete",
+          totalAttempted: ids.length,
+        },
+        links: this._generateLinks(req),
+      };
 
-      res.json({
-        success: true,
-        count: result.count,
-        message: `Soft deleted ${result.count} item(s)`,
-      });
+      res.json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -923,12 +1069,22 @@ export class BaseController {
           deletedAt: null,
         },
       });
+      const response: HATEOASResponse = {
+        data: {
+          success: true,
+          restoredCount: result.count,
+          message: `Restored ${result.count} item(s)`,
+          restoredAt: new Date().toISOString(),
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "bulk_restore",
+          totalAttempted: ids.length,
+        },
+        links: this._generateLinks(req),
+      };
 
-      res.json({
-        success: true,
-        count: result.count,
-        message: `Restored ${result.count} item(s)`,
-      });
+      res.json(response);
     } catch (error) {
       next(error); // Delegate to errorHandler
     }
@@ -978,12 +1134,28 @@ export class BaseController {
       const result = await this.getModelClient().deleteMany({
         where: { id: { in: ids } },
       });
+      const response: HATEOASResponse = {
+        data: {
+          success: true,
+          deletedCount: result.count,
+          message: `Permanently deleted ${result.count} item(s)`,
+          deletedAt: new Date().toISOString(),
+        },
+        meta: {
+          timestamp: new Date().toISOString(),
+          operation: "bulk_hard_delete",
+          totalAttempted: ids.length,
+        },
+        links: this._generateLinks(req),
+      };
 
-      res.json({
-        success: true,
-        count: result.count,
-        message: `Permanently deleted ${result.count} item(s)`,
-      });
+      res.json(response);
+
+      // res.json({
+      //   success: true,
+      //   count: result.count,
+      //   message: `Permanently deleted ${result.count} item(s)`,
+      // });
     } catch (error) {
       next(error);
     }
@@ -1008,8 +1180,23 @@ export class BaseController {
             ...req.uploadedFiles,
           },
         });
+        const response: HATEOASResponse = {
+          data: {
+            ...newItem,
+            // fileStatus: this._getFileUploadStatus(req.uploadedFiles), // Helper method
+          },
+          meta: {
+            timestamp: new Date().toISOString(),
+            operation: "create_with_files",
+            uploadedFiles: Object.keys(req.uploadedFiles || {}),
+            totalFiles: Object.keys(req.uploadedFiles || {}).length,
+          },
+          links: this._generateLinks(req, newItem.id, newItem),
+        };
 
-        res.status(201).json(newItem);
+        res.status(201).json(response);
+
+        // res.status(201).json(newItem);
       } catch (error) {
         next(error); // Delegate to errorHandler
       }
@@ -1051,7 +1238,25 @@ export class BaseController {
         });
 
         if (!updatedItem) throw new Error("Not found");
-        res.json(updatedItem);
+        const response: HATEOASResponse = {
+          data: {
+            ...updatedItem,
+            // fileStatus: this._getFileUploadStatus(req.uploadedFiles),
+          },
+          meta: {
+            timestamp: new Date().toISOString(),
+            operation: "update_with_files",
+            uploadedFiles: Object.keys(req.uploadedFiles || {}),
+            // replacedFiles: this._getReplacedFileInfo(
+            //   existingItem,
+            //   req.uploadedFiles
+            // ), // Helper method
+            totalFiles: Object.keys(req.uploadedFiles || {}).length,
+          },
+          links: this._generateLinks(req, req.params.id, updatedItem),
+        };
+
+        res.json(response);
       } catch (error) {
         next(error); // Delegate to errorHandler
       }
