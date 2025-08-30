@@ -1,5 +1,5 @@
 import { BaseController } from "../../core/controllers/BaseController.js";
-import { Product, Products } from "./Products.js";
+import { Products } from "./Products.js";
 
 // Create the configuration object expected by BaseController
 // const productModelConfig = {
@@ -14,7 +14,7 @@ import { Product, Products } from "./Products.js";
 const productSecurityConfig = {
   allowedFilters: ["name", "price", "category", "inStock"],
   allowedSortFields: ["name", "price", "createdAt"],
-  allowedIncludeRelations: Product.relationFields,
+  allowedIncludeRelations: Products.relationFields,
   allowedSelectFields: [
     "id",
     "name",

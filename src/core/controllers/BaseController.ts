@@ -16,6 +16,13 @@ export interface PrismaModel {
   fileFields?: string[];
   getZodSchema: () => any;
   getPartialZodSchema: () => any;
+  // Add the new methods from BaseModel
+  getRelationModel?: (field: string) => any;
+  validateNestedData?: (
+    data: any,
+    isUpdate?: boolean,
+    relationField?: string
+  ) => Promise<any>;
 }
 
 // Security configuration interface
@@ -27,6 +34,7 @@ interface QuerySecurityConfig {
   maxIncludeDepth: number;
   maxLimit: number;
   hasSoftDelete: boolean; // Added hasSoftDelete
+  maximumNestedDepth?: number;
 }
 
 // Default security configuration (very restrictive by default)
@@ -38,6 +46,7 @@ const DEFAULT_SECURITY_CONFIG: QuerySecurityConfig = {
   maxIncludeDepth: 1,
   maxLimit: 50,
   hasSoftDelete: false, // Default to false
+  maximumNestedDepth: 1,
 };
 
 // Augment Express Request type to include uploadedFiles
@@ -108,6 +117,36 @@ export class BaseController {
   // ========================
   // Security Validation Methods
   // ========================
+
+  // private async _validateSoftDeleteSupport(): Promise<void> {
+  //   try {
+  //     // This will work even if deletedAt column is empty (all null) or table is empty
+  //     // The where clause { deletedAt: null } validates that the column exists in schema
+  //     await this.getModelClient().findMany({
+  //       where: { deletedAt: null }, // Validates column existence, not data content
+  //       take: 1, // Just try to get one record (may return empty array if no matches)
+  //       select: { id: true }, // Minimal selection
+  //     });
+  //   } catch (error: any) {
+  //     if (
+  //       error.message?.includes("deletedAt") ||
+  //       error.message?.includes("Unknown field") ||
+  //       error.message?.includes("Invalid field") ||
+  //       error.message?.includes("does not exist") ||
+  //       error.code === "P2009" ||
+  //       error.code === "P2012"
+  //     ) {
+  //       throw new Error(
+  //         `❌ Configuration error: hasSoftDelete=true for model '${this.model.modelName}' ` +
+  //           `but the model does not have a 'deletedAt' field. ` +
+  //           `Either set hasSoftDelete=false or add deletedAt field to your Prisma schema.`
+  //       );
+  //     }
+  //     // Re-throw other errors (like connection errors, etc.)
+  //     // throw error;
+  //   }
+  // }
+
   private _validateFilterFields(where: Record<string, any>): void {
     if (!where) return;
 
@@ -205,8 +244,19 @@ export class BaseController {
     return (this.prisma as any)[this.model.modelName];
   }
 
-  private _isValidRelation(fieldName: string): boolean {
-    return this.validRelations.includes(fieldName);
+  private _isValidRelation(fieldPath: string): boolean {
+    // Use BaseModel's relation metadata if available
+    const firstLevelField = fieldPath.split(".")[0];
+
+    if (this.model.getRelationModel) {
+      const relatedModel = this.model.getRelationModel(firstLevelField);
+      if (relatedModel) {
+        return true; // Valid relation with metadata
+      }
+    }
+
+    // Fallback to original validation
+    return this.validRelations.includes(firstLevelField);
   }
 
   private async _validateWithModelSchema(
@@ -217,6 +267,18 @@ export class BaseController {
       ? this.model.getPartialZodSchema()
       : this.model.getZodSchema();
     return validateWithZod(schema, data);
+  }
+  private async _validateWithModelSchemaRecursive(
+    data: any,
+    isUpdate: boolean = false
+  ): Promise<any> {
+    // FIRST try to use BaseModel's enhanced validation
+    if (this.model.validateNestedData) {
+      return await this.model.validateNestedData(data, isUpdate);
+    }
+
+    // FALLBACK to the original simple validation
+    return await this._validateWithModelSchema(data, isUpdate);
   }
 
   private _parseQueryParams(req: Request) {
@@ -406,39 +468,100 @@ export class BaseController {
 
   private _processNestedFields(
     data: Record<string, any>,
-    isUpdate: boolean = false
-  ) {
+    isUpdate: boolean = false,
+    currentDepth: number = 0,
+    maxDepth: number = this.securityConfig.maximumNestedDepth || 1
+  ): Record<string, any> {
     const nestedData: Record<string, any> = {};
 
+    if (currentDepth >= maxDepth) return nestedData;
+
     for (const [field, value] of Object.entries(data)) {
-      if (!this._isValidRelation(field) || value == null) continue;
+      if (value == null) continue;
 
-      if (isUpdate) {
-        nestedData[field] = {};
-        if (value.create) nestedData[field].create = value.create;
-        if (value.connect) nestedData[field].connect = value.connect;
-        if (value.disconnect) nestedData[field].disconnect = value.disconnect;
-        if (value.delete) nestedData[field].delete = value.delete;
-        if (value.update) nestedData[field].update = value.update;
-
-        if (
-          !value.create &&
-          !value.connect &&
-          !value.disconnect &&
-          !value.update &&
-          !value.delete &&
-          Object.keys(value).length > 0
-        ) {
-          nestedData[field].update = value;
-        }
-      } else {
-        if (value.create || value.connect) {
+      if (
+        this._isValidRelation(field) &&
+        typeof value === "object" &&
+        !Array.isArray(value)
+      ) {
+        // This field is a valid relation
+        if (isUpdate) {
           nestedData[field] = {};
-          if (value.create) nestedData[field].create = value.create;
+          if (value.create) {
+            nestedData[field].create = this._processNestedFields(
+              value.create,
+              false,
+              currentDepth + 1,
+              maxDepth
+            );
+          }
           if (value.connect) nestedData[field].connect = value.connect;
+          if (value.disconnect) nestedData[field].disconnect = value.disconnect;
+          if (value.delete) nestedData[field].delete = value.delete;
+          if (value.update) {
+            nestedData[field].update = this._processNestedFields(
+              value.update,
+              true,
+              currentDepth + 1,
+              maxDepth
+            );
+          }
+
+          // Handle implicit update syntax
+          if (
+            !value.create &&
+            !value.connect &&
+            !value.disconnect &&
+            !value.update &&
+            !value.delete
+          ) {
+            nestedData[field].update = this._processNestedFields(
+              value,
+              true,
+              currentDepth + 1,
+              maxDepth
+            );
+          }
         } else {
-          nestedData[field] = { create: value };
+          // Create operation
+          if (value.create || value.connect) {
+            nestedData[field] = {};
+            if (value.create) {
+              nestedData[field].create = this._processNestedFields(
+                value.create,
+                false,
+                currentDepth + 1,
+                maxDepth
+              );
+            }
+            if (value.connect) nestedData[field].connect = value.connect;
+          } else {
+            // Implicit create syntax
+            nestedData[field] = {
+              create: this._processNestedFields(
+                value,
+                false,
+                currentDepth + 1,
+                maxDepth
+              ),
+            };
+          }
         }
+      } else if (
+        currentDepth > 0 &&
+        typeof value === "object" &&
+        !Array.isArray(value)
+      ) {
+        // Nested object within a relation
+        nestedData[field] = this._processNestedFields(
+          value,
+          isUpdate,
+          currentDepth + 1,
+          maxDepth
+        );
+      } else {
+        // Regular field
+        nestedData[field] = value;
       }
     }
 
@@ -596,7 +719,9 @@ export class BaseController {
 
   create = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const validatedData = await this._validateWithModelSchema(req.body);
+      const validatedData = await this._validateWithModelSchemaRecursive(
+        req.body
+      );
       const nestedData = this._processNestedFields(req.body, false);
 
       const newItem = await this.getModelClient().create({
@@ -623,7 +748,10 @@ export class BaseController {
 
   update = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const validatedData = await this._validateWithModelSchema(req.body, true);
+      const validatedData = await this._validateWithModelSchemaRecursive(
+        req.body,
+        true
+      );
       const nestedData = this._processNestedFields(req.body, true);
 
       const updatedItem = await this.getModelClient().update({
@@ -805,7 +933,7 @@ export class BaseController {
 
       // Validate items against schema
       const validatedItems = await Promise.all(
-        items.map((item: any) => this._validateWithModelSchema(item))
+        items.map((item: any) => this._validateWithModelSchemaRecursive(item))
       );
 
       // Process nested fields
@@ -921,7 +1049,7 @@ export class BaseController {
 
       const validatedUpdates = await Promise.all(
         updates.map((update: any) =>
-          this._validateWithModelSchema(update.data, true)
+          this._validateWithModelSchemaRecursive(update.data, true)
         )
       );
 
@@ -1170,7 +1298,9 @@ export class BaseController {
     processFileUploads,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const validatedData = await this._validateWithModelSchema(req.body);
+        const validatedData = await this._validateWithModelSchemaRecursive(
+          req.body
+        );
         const nestedData = this._processNestedFields(req.body, false);
 
         const newItem = await this.getModelClient().create({
@@ -1209,7 +1339,7 @@ export class BaseController {
     processFileUploads,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
-        const validatedData = await this._validateWithModelSchema(
+        const validatedData = await this._validateWithModelSchemaRecursive(
           req.body,
           true
         );
