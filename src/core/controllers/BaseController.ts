@@ -281,6 +281,33 @@ export class BaseController {
     return await this._validateWithModelSchema(data, isUpdate);
   }
 
+  //input sanitization
+
+  private _sanitizeInput(value: any): any {
+    if (typeof value !== "string") return value;
+
+    // Remove potentially dangerous characters
+    const sanitized = value.replace(/[<>"'`;\\]/g, "");
+
+    // Additional security: limit JSON parsing to prevent DoS
+    if (
+      (sanitized.startsWith("{") && sanitized.endsWith("}")) ||
+      (sanitized.startsWith("[") && sanitized.endsWith("]"))
+    ) {
+      try {
+        // Limit JSON size to prevent DoS
+        if (sanitized.length > 10000) {
+          throw new Error("JSON payload too large");
+        }
+        return JSON.parse(sanitized);
+      } catch {
+        return sanitized; // Return sanitized string if parsing fails
+      }
+    }
+
+    return sanitized;
+  }
+
   private _parseQueryParams(req: Request) {
     const {
       page = 1,
@@ -391,7 +418,7 @@ export class BaseController {
       }
 
       // Return as string for everything else
-      return value;
+      return this._sanitizeInput(value);
     };
 
     // Parse operator values in filter conditions
