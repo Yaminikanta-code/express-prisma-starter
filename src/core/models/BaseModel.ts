@@ -42,7 +42,7 @@ type RelationMetadata = {
 };
 
 export class BaseModel {
-  static modelName: string | null = null;
+  static modelName: string = "";
   static relationFields: string[] = [];
   static zodSchema: any = null;
   static fileFields: string[] = [];

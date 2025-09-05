@@ -8,22 +8,7 @@ import {
 } from "../middlewares/uploadMiddleware.js";
 import { deleteFile } from "../../utils/s3Upload.js";
 import { PrismaClient } from "@prisma/client";
-
-// Type for the model instance passed to constructor
-export interface PrismaModel {
-  modelName: string;
-  relationFields: string[];
-  fileFields?: string[];
-  getZodSchema: () => any;
-  getPartialZodSchema: () => any;
-  // Add the new methods from BaseModel
-  getRelationModel?: (field: string) => any;
-  validateNestedData?: (
-    data: any,
-    isUpdate?: boolean,
-    relationField?: string
-  ) => Promise<any>;
-}
+import { BaseModel } from "../models/BaseModel.js";
 
 // Security configuration interface
 interface QuerySecurityConfig {
@@ -92,12 +77,12 @@ interface HATEOASResponse {
 
 export class BaseController {
   private prisma: PrismaClient;
-  private model: PrismaModel;
+  private model: typeof BaseModel;
   private securityConfig: QuerySecurityConfig;
   private validRelations: string[];
 
   constructor(
-    model: PrismaModel,
+    model: typeof BaseModel,
     securityConfig: Partial<QuerySecurityConfig> = {}
   ) {
     this.prisma = new Proxy({} as PrismaClient, {
@@ -241,7 +226,7 @@ export class BaseController {
   // Internal Helpers
   // ========================
   private getModelClient(): PrismaModelClient {
-    return (this.prisma as any)[this.model.modelName];
+    return (this.prisma as any)[this.model.modelName!];
   }
 
   private _isValidRelation(fieldPath: string): boolean {
@@ -926,7 +911,7 @@ export class BaseController {
   };
 
   // ========================
-  // Bulk Operations
+  // Bulk Operations with transactions
   // ========================
   bulkCreate = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -968,85 +953,42 @@ export class BaseController {
         this._processNestedFields(validatedData, false)
       );
 
-      // Create items with individual error handling
-      const creationResults = await Promise.allSettled(
-        processedItems.map((processedData) =>
-          this.getModelClient().create({
-            data: processedData,
-          })
-        )
+      // Execute in transaction - ALL or NOTHING
+      const createdItems = await this.model.runInTransaction(
+        async (tx) => {
+          return await Promise.all(
+            processedItems.map((processedData) =>
+              (tx as any)[this.model.modelName!].create({
+                data: processedData,
+              })
+            )
+          );
+        },
+        {
+          isolationLevel: "Serializable",
+          timeoutMs: 30000,
+          maxRetries: 3,
+        }
       );
-
-      // Process results
-      const successfulCreations = creationResults
-        .filter(
-          (result): result is PromiseFulfilledResult<any> =>
-            result.status === "fulfilled"
-        )
-        .map((result) => result.value);
-
-      const failedCreations = creationResults
-        .filter(
-          (result): result is PromiseRejectedResult =>
-            result.status === "rejected"
-        )
-        .map((result, index) => ({
-          originalData: items[index],
-          error: result.reason.message || "Creation failed",
-        }));
-
-      if (failedCreations.length > 0) {
-        const response: HATEOASResponse = {
-          data: {
-            success: true,
-            createdCount: successfulCreations.length,
-            failedCount: failedCreations.length,
-            createdItems: successfulCreations,
-            failures: failedCreations,
-            message: `Successfully created ${successfulCreations.length} out of ${items.length} items`,
-          },
-
-          links: this._generateLinks(req),
-        };
-
-        return res.status(207).json(response);
-        // Partial success response
-        // return res.status(207).json({
-        //   success: true,
-        //   createdCount: successfulCreations.length,
-        //   failedCount: failedCreations.length,
-        //   createdItems: successfulCreations,
-        //   failures: failedCreations,
-        //   message: `Successfully created ${successfulCreations.length} out of ${items.length} items`,
-        // });
-      }
-
-      // Full success response
 
       const response: HATEOASResponse = {
         data: {
           success: true,
-          count: successfulCreations.length,
-          items: successfulCreations,
-          message: `Successfully created ${successfulCreations.length} items`,
+          count: createdItems.length,
+          items: createdItems,
+          message: `Successfully created ${createdItems.length} items`,
         },
         links: this._generateLinks(req),
       };
-
       return res.status(201).json(response);
-      // res.status(201).json({
-      //   success: true,
-      //   count: successfulCreations.length,
-      //   items: successfulCreations,
-      //   message: `Successfully created ${successfulCreations.length} items`,
-      // });
     } catch (error) {
       next(error);
     }
   };
+
   bulkUpdate = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // Add proper validation for request body
+      // Validate each item before processing
       if (!req.body || !Array.isArray(req.body)) {
         return res.status(400).json({
           error: "Request body must be an array of update objects",
@@ -1084,17 +1026,28 @@ export class BaseController {
         this._processNestedFields(update.data, true)
       );
 
-      const updatedItems = await Promise.all(
-        updates.map((update: any, index: number) =>
-          this.getModelClient().update({
-            where: { id: update.id },
-            data: {
-              ...validatedUpdates[index],
-              ...nestedUpdates[index],
-            },
-          })
-        )
+      // Execute in transaction - ALL or NOTHING
+      const updatedItems = await this.model.runInTransaction(
+        async (tx) => {
+          return await Promise.all(
+            updates.map((update: any, index: number) =>
+              (tx as any)[this.model.modelName!].update({
+                where: { id: update.id },
+                data: {
+                  ...validatedUpdates[index],
+                  ...nestedUpdates[index],
+                },
+              })
+            )
+          );
+        },
+        {
+          isolationLevel: "RepeatableRead",
+          timeoutMs: 20000,
+          maxRetries: 3,
+        }
       );
+
       const response: HATEOASResponse = {
         data: {
           success: true,
@@ -1157,15 +1110,26 @@ export class BaseController {
         });
       }
 
-      const result = await this.getModelClient().updateMany({
-        where: {
-          id: { in: ids },
-          deletedAt: null,
+      // Execute in transaction - ALL or NOTHING
+      const result = await this.model.runInTransaction(
+        async (tx) => {
+          return await (tx as any)[this.model.modelName!].updateMany({
+            where: {
+              id: { in: ids },
+              deletedAt: null,
+            },
+            data: {
+              deletedAt: new Date(),
+            },
+          });
         },
-        data: {
-          deletedAt: new Date(),
-        },
-      });
+        {
+          isolationLevel: "ReadCommitted",
+          timeoutMs: 15000,
+          maxRetries: 2,
+        }
+      );
+
       const response: HATEOASResponse = {
         data: {
           success: true,
@@ -1186,6 +1150,7 @@ export class BaseController {
       next(error); // Delegate to errorHandler
     }
   };
+
   bulkRestore = async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!this.securityConfig.hasSoftDelete) {
@@ -1215,15 +1180,26 @@ export class BaseController {
         });
       }
 
-      const result = await this.getModelClient().updateMany({
-        where: {
-          id: { in: ids },
-          deletedAt: { not: null }, // Only restore soft-deleted items
+      // Execute in transaction - ALL or NOTHING
+      const result = await this.model.runInTransaction(
+        async (tx) => {
+          return await (tx as any)[this.model.modelName!].updateMany({
+            where: {
+              id: { in: ids },
+              deletedAt: { not: null }, // Only restore soft-deleted items
+            },
+            data: {
+              deletedAt: null,
+            },
+          });
         },
-        data: {
-          deletedAt: null,
-        },
-      });
+        {
+          isolationLevel: "ReadCommitted",
+          timeoutMs: 15000,
+          maxRetries: 2,
+        }
+      );
+
       const response: HATEOASResponse = {
         data: {
           success: true,
@@ -1270,25 +1246,40 @@ export class BaseController {
         });
       }
 
-      const existingItems = await this.getModelClient().findMany({
-        where: { id: { in: ids } },
-      });
+      // Execute in transaction - ALL or NOTHING
+      const result = await this.model.runInTransaction(
+        async (tx) => {
+          // Get items first for file cleanup
+          const existingItems = await (tx as any)[
+            this.model.modelName!
+          ].findMany({
+            where: { id: { in: ids } },
+          });
 
-      // Clean up files if needed
-      if (this.model.fileFields?.length) {
-        for (const item of existingItems) {
-          for (const field of this.model.fileFields) {
-            if (item[field]) {
-              const key = extractS3Key(item[field]);
-              if (key) await deleteFile(key).catch(console.error);
+          // Clean up files if needed
+          if (this.model.fileFields?.length) {
+            for (const item of existingItems) {
+              for (const field of this.model.fileFields) {
+                if (item[field]) {
+                  const key = extractS3Key(item[field]);
+                  if (key) await deleteFile(key).catch(console.error);
+                }
+              }
             }
           }
-        }
-      }
 
-      const result = await this.getModelClient().deleteMany({
-        where: { id: { in: ids } },
-      });
+          // Perform the actual deletion
+          return await (tx as any)[this.model.modelName!].deleteMany({
+            where: { id: { in: ids } },
+          });
+        },
+        {
+          isolationLevel: "Serializable",
+          timeoutMs: 25000,
+          maxRetries: 3,
+        }
+      );
+
       const response: HATEOASResponse = {
         data: {
           success: true,
@@ -1305,12 +1296,6 @@ export class BaseController {
       };
 
       res.json(response);
-
-      // res.json({
-      //   success: true,
-      //   count: result.count,
-      //   message: `Permanently deleted ${result.count} item(s)`,
-      // });
     } catch (error) {
       next(error);
     }
