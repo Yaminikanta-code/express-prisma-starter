@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { BaseModel } from "../../core/models/BaseModel.js";
-import { createModelConfigFromModel } from "@/utils/createModelConfigFromBaseModel.js";
+// import { createModelConfigFromModel } from "@/utils/createModelConfigFromBaseModel.js";
 
 export class Product extends BaseModel {
   static modelName = "Product";
@@ -17,4 +17,4 @@ export class Product extends BaseModel {
   });
 }
 
-export const Products = createModelConfigFromModel(Product);
+// export const Products = createModelConfigFromModel(Product);
