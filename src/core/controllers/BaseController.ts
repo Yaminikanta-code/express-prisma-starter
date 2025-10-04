@@ -5,8 +5,11 @@ import {
   handleMultipleFiles,
   processFileUploads,
   extractS3Key,
+  handleUploadErrors,
+  cleanupUploadedFiles,
+  RequestWithFiles,
 } from "../middlewares/uploadMiddleware.js";
-import { deleteFile } from "../../utils/s3Upload.js";
+import { deleteFile, isS3Configured } from "../../utils/s3Upload.js";
 import { PrismaClient } from "@prisma/client";
 import { BaseModel } from "../models/BaseModel.js";
 
@@ -1304,16 +1307,46 @@ export class BaseController {
   // ========================
   // File Upload Methods
   // ========================
+  // Enhanced createWithFiles method
   createWithFiles = [
-    (req: Request, res: Response, next: NextFunction) =>
-      handleMultipleFiles(this.model.fileFields || [])(req, res, next),
+    (req: Request, res: Response, next: NextFunction) => {
+      // Check if S3 is configured
+      if (!isS3Configured()) {
+        return res.status(500).json({
+          success: false,
+          message: "File upload is not configured. S3 credentials are missing.",
+        });
+      }
+      return handleMultipleFiles(this.model.fileFields || [])(req, res, next);
+    },
     processFileUploads,
-    async (req: Request, res: Response, next: NextFunction) => {
+    handleUploadErrors,
+    cleanupUploadedFiles,
+    async (req: RequestWithFiles, res: Response, next: NextFunction) => {
       try {
+        // Your existing create logic
         const validatedData = await this._validateWithModelSchemaRecursive(
           req.body
         );
         const nestedData = this._processNestedFields(req.body, false);
+
+        // Check for upload errors
+        if (req.uploadErrors && req.uploadErrors.length > 0) {
+          const response: HATEOASResponse = {
+            data: {
+              message: "File upload failed",
+              errors: req.uploadErrors,
+              uploadedFiles: req.uploadedFiles,
+            },
+            meta: {
+              timestamp: new Date().toISOString(),
+              operation: "create_with_files_error",
+            },
+            links: this._generateLinks(req),
+          };
+          res.status(400).json(response);
+          return;
+        }
 
         const newItem = await this.getModelClient().create({
           data: {
@@ -1322,11 +1355,9 @@ export class BaseController {
             ...req.uploadedFiles,
           },
         });
+
         const response: HATEOASResponse = {
-          data: {
-            ...newItem,
-            // fileStatus: this._getFileUploadStatus(req.uploadedFiles), // Helper method
-          },
+          data: newItem,
           meta: {
             timestamp: new Date().toISOString(),
             operation: "create_with_files",
@@ -1337,19 +1368,28 @@ export class BaseController {
         };
 
         res.status(201).json(response);
-
-        // res.status(201).json(newItem);
       } catch (error) {
         next(error); // Delegate to errorHandler
       }
     },
   ];
 
+  // Enhanced updateWithFiles method in BaseController
   updateWithFiles = [
-    (req: Request, res: Response, next: NextFunction) =>
-      handleMultipleFiles(this.model.fileFields || [])(req, res, next),
+    (req: Request, res: Response, next: NextFunction) => {
+      // Check if S3 is configured
+      if (!isS3Configured()) {
+        return res.status(500).json({
+          success: false,
+          message: "File upload is not configured. S3 credentials are missing.",
+        });
+      }
+      return handleMultipleFiles(this.model.fileFields || [])(req, res, next);
+    },
     processFileUploads,
-    async (req: Request, res: Response, next: NextFunction) => {
+    handleUploadErrors,
+    cleanupUploadedFiles,
+    async (req: RequestWithFiles, res: Response, next: NextFunction) => {
       try {
         const validatedData = await this._validateWithModelSchemaRecursive(
           req.body,
@@ -1357,11 +1397,30 @@ export class BaseController {
         );
         const nestedData = this._processNestedFields(req.body, true);
 
+        // Check for upload errors
+        if (req.uploadErrors && req.uploadErrors.length > 0) {
+          const response: HATEOASResponse = {
+            data: {
+              message: "File upload failed",
+              errors: req.uploadErrors,
+              uploadedFiles: req.uploadedFiles,
+            },
+            meta: {
+              timestamp: new Date().toISOString(),
+              operation: "update_with_files_error",
+            },
+            links: this._generateLinks(req, req.params.id),
+          };
+          res.status(400).json(response);
+          return;
+        }
+
         const existingItem = await this.getModelClient().findUnique({
           where: { id: req.params.id },
         });
 
-        if (existingItem && this.model.fileFields?.length) {
+        // Only attempt file deletion if S3 is configured and files exist
+        if (isS3Configured() && existingItem && this.model.fileFields?.length) {
           for (const field of this.model.fileFields) {
             if (req.uploadedFiles?.[field] && existingItem[field]) {
               const oldKey = extractS3Key(existingItem[field]);
@@ -1380,19 +1439,13 @@ export class BaseController {
         });
 
         if (!updatedItem) throw new Error("Not found");
+
         const response: HATEOASResponse = {
-          data: {
-            ...updatedItem,
-            // fileStatus: this._getFileUploadStatus(req.uploadedFiles),
-          },
+          data: updatedItem,
           meta: {
             timestamp: new Date().toISOString(),
             operation: "update_with_files",
             uploadedFiles: Object.keys(req.uploadedFiles || {}),
-            // replacedFiles: this._getReplacedFileInfo(
-            //   existingItem,
-            //   req.uploadedFiles
-            // ), // Helper method
             totalFiles: Object.keys(req.uploadedFiles || {}).length,
           },
           links: this._generateLinks(req, req.params.id, updatedItem),
