@@ -1,5 +1,5 @@
 import express from "express";
-import { UploadController } from "../controllers/upload.controller.js";
+import { UploadController } from "./upload.controller.js";
 
 export class UploadRouter {
   public router: express.Router;

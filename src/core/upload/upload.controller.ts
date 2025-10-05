@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { UploadResponse, UploadResult } from "../models/upload.model.js";
+import { UploadResponse, UploadResult } from "./upload.model.js";
 import {
   handleMultipleFiles,
   processFileUploads,

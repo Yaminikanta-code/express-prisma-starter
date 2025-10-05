@@ -11,7 +11,7 @@ import {
 } from "../middlewares/uploadMiddleware.js";
 import { deleteFile, isS3Configured } from "../../utils/s3Upload.js";
 import { PrismaClient } from "@prisma/client";
-import { BaseModel } from "../models/BaseModel.js";
+import { BaseModel } from "./BaseModel.js";
 
 // Security configuration interface
 interface QuerySecurityConfig {

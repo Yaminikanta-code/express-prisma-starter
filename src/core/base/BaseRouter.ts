@@ -1,6 +1,6 @@
 import express from "express";
 import { rateLimit, RateLimitRequestHandler } from "express-rate-limit";
-import { BaseController } from "../controllers/BaseController.js";
+import { BaseController } from "./BaseController.js";
 
 interface RouterConfig {
   rateLimiting?: boolean;

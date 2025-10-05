@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BaseModel } from "../../core/models/BaseModel.js";
+import { BaseModel } from "../../core/base/BaseModel.js";
 // import { createModelConfigFromModel } from "@/utils/createModelConfigFromBaseModel.js";
 
 export class Product extends BaseModel {

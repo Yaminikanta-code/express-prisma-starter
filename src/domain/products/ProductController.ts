@@ -1,4 +1,4 @@
-import { BaseController } from "../../core/controllers/BaseController.js";
+import { BaseController } from "../../core/base/BaseController.js";
 import { Product } from "./Products.js";
 
 // Create the configuration object expected by BaseController
